@@ -1,12 +1,16 @@
 use clap::Parser;
 use colored::Colorize;
 use daemonize::Daemonize;
+use rusty_audio::Audio;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     process::{self, Command},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -25,6 +29,9 @@ struct Args {
 
     #[arg(short, long)]
     path: Option<String>,
+
+    #[arg(short, long, num_args=1..)]
+    add: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,9 +41,14 @@ struct Config {
     blocked_sites: Vec<String>,
     duration: u64,
     working_directory: String,
+    start_audio_name: String,
+    end_audio_name: String,
 }
 
 fn main() {
+    let running = Arc::new(AtomicBool::new(true));
+    let thread_running = Arc::clone(&running);
+
     let args = Args::parse();
     let run_in_background = args.background;
 
@@ -59,7 +71,23 @@ fn main() {
         config.duration = duration;
     }
 
+    if let Some(mut new_sites) = args.add {
+        config.blocked_sites.append(&mut new_sites);
+    }
+
     let config = Arc::new(config);
+
+    let mut audio = Audio::new();
+    audio.add(
+        "start",
+        format!("{}/{}", config.working_directory, config.start_audio_name),
+    );
+    audio.add(
+        "end",
+        format!("{}/{}", config.working_directory, config.end_audio_name),
+    );
+
+    audio.play("start");
 
     if run_in_background {
         let stdout = File::create(format!("{}/focus.out", config.working_directory)).unwrap();
@@ -74,7 +102,7 @@ fn main() {
 
         daemonize
             .start()
-            .expect(&format!("{}", "Error, daemonize failed".bold().red()));
+            .expect(&format!("{}", "[!] Error: daemonize failed".bold().red()));
     }
 
     let original_content = match fs::read_to_string(&config.hosts_path) {
@@ -140,9 +168,13 @@ fn main() {
         .arg("flush-caches")
         .output()
         .expect(&format!("{}", "[!] Failed to flush DNS cache".bold().red()));
+
     let thread_config = Arc::clone(&config);
-    start_checker_thead(thread_config, new_content);
+    start_checker_thead(thread_config, new_content, thread_running);
     thread::sleep(Duration::from_mins(config.duration));
+
+    running.store(false, Ordering::SeqCst);
+    thread::sleep(Duration::from_millis(100));
 
     println!("{}", "Time's up! Unblocking sites.".bold().cyan());
     if let Err(e) = fs::write(&config.hosts_path, &*original_content) {
@@ -157,6 +189,8 @@ fn main() {
         );
         eprintln!("{}", format!("Error: {}", e).bold().red());
     }
+    audio.play("end");
+    audio.wait();
 }
 
 fn load_config() -> Result<Config, toml::de::Error> {
@@ -175,9 +209,9 @@ fn save_config(config: &Config) -> Result<(), io::Error> {
     fs::write(CONFIG_PATH, toml_string)
 }
 
-fn start_checker_thead(config: Arc<Config>, blocked_content: String) {
+fn start_checker_thead(config: Arc<Config>, blocked_content: String, running: Arc<AtomicBool>) {
     thread::spawn(move || {
-        loop {
+        while running.load(Ordering::SeqCst) {
             if let Ok(current_content) = fs::read_to_string(&config.hosts_path) {
                 if !current_content.contains(&blocked_content) {
                     let mut hosts_file = OpenOptions::new()
