@@ -1,10 +1,11 @@
+use clap::Parser;
 use colored::Colorize;
+use daemonize::Daemonize;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, OpenOptions},
-    io,
-    io::Write,
-    process,
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
+    process::{self, Command},
     sync::Arc,
     thread,
     time::Duration,
@@ -13,17 +14,34 @@ use std::{
 const CONFIG_PATH: &str = "config.toml";
 const CHECK_INTERVAL: u64 = 5;
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long)]
+    duration: Option<u64>,
+
+    #[arg(short, long, default_value_t = false)]
+    background: bool,
+
+    #[arg(short, long)]
+    path: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Config {
     hosts_path: String,
     block_ip: String,
     blocked_sites: Vec<String>,
-    duration_mins: u64,
+    duration: u64,
+    working_directory: String,
 }
 
 fn main() {
-    let config = match load_config() {
-        Ok(config) => Arc::new(config),
+    let args = Args::parse();
+    let run_in_background = args.background;
+
+    let mut config = match load_config() {
+        Ok(config) => config,
         Err(e) => {
             eprintln!(
                 "{}",
@@ -33,7 +51,32 @@ fn main() {
         }
     };
 
-    let duration = config.duration_mins;
+    if let Some(path) = args.path {
+        config.hosts_path = path;
+    }
+
+    if let Some(duration) = args.duration {
+        config.duration = duration;
+    }
+
+    let config = Arc::new(config);
+
+    if run_in_background {
+        let stdout = File::create(format!("{}/focus.out", config.working_directory)).unwrap();
+        let stderr = File::create(format!("{}/focus.err", config.working_directory)).unwrap();
+
+        let daemonize = Daemonize::new()
+            .pid_file(format!("{}/focus.pid", config.working_directory))
+            .chroot("/")
+            .working_directory(&config.working_directory)
+            .stdout(stdout)
+            .stderr(stderr);
+
+        daemonize
+            .start()
+            .expect(&format!("{}", "Error, daemonize failed".bold().red()));
+    }
+
     let original_content = match fs::read_to_string(&config.hosts_path) {
         Ok(content) => Arc::new(content),
         Err(e) => {
@@ -78,7 +121,7 @@ fn main() {
 
     println!(
         "{}",
-        format!("[>] Blocking sites for {} minutes", duration)
+        format!("[>] Blocking sites for {} minutes", config.duration)
             .bold()
             .cyan()
     );
@@ -92,9 +135,14 @@ fn main() {
         process::exit(1);
     }
 
+    println!("{}", "[>] Flushing DNS cache".bold().cyan());
+    Command::new("resolvectl")
+        .arg("flush-caches")
+        .output()
+        .expect(&format!("{}", "[!] Failed to flush DNS cache".bold().red()));
     let thread_config = Arc::clone(&config);
     start_checker_thead(thread_config, new_content);
-    thread::sleep(Duration::from_mins(duration));
+    thread::sleep(Duration::from_mins(config.duration));
 
     println!("{}", "Time's up! Unblocking sites.".bold().cyan());
     if let Err(e) = fs::write(&config.hosts_path, &*original_content) {

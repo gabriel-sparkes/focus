@@ -1,4 +1,0 @@
-hosts_path = "/etc/hosts"
-block_ip = "127.0.0.1"
-blocked_sites = ["youtube.com", "instagram.com"]
-duration_mins = 60
