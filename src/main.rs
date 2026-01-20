@@ -27,7 +27,7 @@ fn main() {
         Err(e) => {
             eprintln!(
                 "{}",
-                format!("Error parsing config.toml: {}", e).bold().red()
+                format!("[!] Error parsing config.toml: {}", e).bold().red()
             );
             std::process::exit(1);
         }
@@ -40,7 +40,7 @@ fn main() {
             eprintln!(
                 "{}",
                 format!(
-                    "Failed to read hosts file. Are you running as sudo? Error: {}",
+                    "[!] Failed to read hosts file. Are you running as sudo? Error: {}",
                     e
                 )
                 .bold()
@@ -63,25 +63,31 @@ fn main() {
 
     let mut new_content = String::from("\n# BEGIN FOCUS BLOCK\n");
     for site in &config.blocked_sites {
-        new_content.push_str(&format!("{} {}\n", &config.block_ip, site));
+        new_content.push_str(&format!("{}\t{}\n", &config.block_ip, site));
     }
     new_content.push_str("# END FOCUS BLOCK");
 
     let mut hosts_file = OpenOptions::new()
         .append(true)
         .open(&config.hosts_path)
-        .expect(&format!("Failed to open {}", &config.hosts_path));
+        .expect(
+            &format!("[!] Failed to open {}", &config.hosts_path)
+                .bold()
+                .red(),
+        );
 
     println!(
         "{}",
-        format!("Blocking sites for {} minutes", duration)
+        format!("[>] Blocking sites for {} minutes", duration)
             .bold()
             .cyan()
     );
     if let Err(e) = hosts_file.write(&*new_content.as_bytes()) {
         eprintln!(
             "{}",
-            format!("Failed to write to hosts file: {}", e).bold().red()
+            format!("[!] Failed to write to hosts file: {}", e)
+                .bold()
+                .red()
         );
         process::exit(1);
     }
@@ -106,15 +112,18 @@ fn main() {
 }
 
 fn load_config() -> Result<Config, toml::de::Error> {
-    let content =
-        fs::read_to_string(CONFIG_PATH).expect(&format!("Could not read {}", CONFIG_PATH));
+    let content = fs::read_to_string(CONFIG_PATH)
+        .expect(&format!("[!] Could not read {}", CONFIG_PATH).bold().red());
 
     let config = toml::from_str(&content);
     config
 }
 
 fn save_config(config: &Config) -> Result<(), io::Error> {
-    let toml_string = toml::to_string(config).expect("Could not encode config to TOML");
+    let toml_string = toml::to_string(config).expect(&format!(
+        "{}",
+        "[!] Could not encode config to TOML".bold().red()
+    ));
     fs::write(CONFIG_PATH, toml_string)
 }
 
