@@ -1,11 +1,13 @@
 use clap::Parser;
 use colored::Colorize;
 use daemonize::Daemonize;
-use rusty_audio::Audio;
+use gag::Gag;
+use rodio::{Decoder, OutputStreamBuilder, Sink};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, BufReader, Write},
+    path,
     process::{self, Command},
     sync::{
         Arc,
@@ -41,16 +43,12 @@ struct Config {
     blocked_sites: Vec<String>,
     duration: u64,
     working_directory: String,
-    start_audio_name: String,
-    end_audio_name: String,
+    start_audio: String,
+    end_audio: String,
 }
 
 fn main() {
-    let running = Arc::new(AtomicBool::new(true));
-    let thread_running = Arc::clone(&running);
-
     let args = Args::parse();
-    let run_in_background = args.background;
 
     let mut config = match load_config() {
         Ok(config) => config,
@@ -59,7 +57,7 @@ fn main() {
                 "{}",
                 format!("[!] Error parsing config.toml: {}", e).bold().red()
             );
-            std::process::exit(1);
+            process::exit(1);
         }
     };
 
@@ -77,24 +75,28 @@ fn main() {
 
     let config = Arc::new(config);
 
-    let mut audio = Audio::new();
-    audio.add(
-        "start",
-        format!("{}/{}", config.working_directory, config.start_audio_name),
-    );
-    audio.add(
-        "end",
-        format!("{}/{}", config.working_directory, config.end_audio_name),
-    );
+    let pid_path = format!("{}/focus.pid", config.working_directory);
+    let out_path = format!("{}/focus.out", config.working_directory);
+    let err_path = format!("{}/focus.err", config.working_directory);
 
-    audio.play("start");
+    if path::Path::new(&pid_path).exists() {
+        println!(
+            "{}",
+            "[!] Warning: Stale PID file found. Deleting..."
+                .bold()
+                .yellow()
+        );
+        let _ = fs::remove_file(&pid_path);
+    }
 
-    if run_in_background {
-        let stdout = File::create(format!("{}/focus.out", config.working_directory)).unwrap();
-        let stderr = File::create(format!("{}/focus.err", config.working_directory)).unwrap();
+    if args.background {
+        println!("{}", "[>] Moving to background...".bold().cyan());
+
+        let stdout = File::create(out_path).unwrap();
+        let stderr = File::create(err_path).unwrap();
 
         let daemonize = Daemonize::new()
-            .pid_file(format!("{}/focus.pid", config.working_directory))
+            .pid_file(pid_path)
             .chroot("/")
             .working_directory(&config.working_directory)
             .stdout(stdout)
@@ -103,7 +105,15 @@ fn main() {
         daemonize
             .start()
             .expect(&format!("{}", "[!] Error: daemonize failed".bold().red()));
+    } else {
+        play_audio(format!(
+            "{}/{}",
+            config.working_directory, config.start_audio
+        ));
     }
+
+    let running = Arc::new(AtomicBool::new(true));
+    let thread_running = Arc::clone(&running);
 
     let original_content = match fs::read_to_string(&config.hosts_path) {
         Ok(content) => Arc::new(content),
@@ -120,14 +130,25 @@ fn main() {
             process::exit(1);
         }
     };
+
+    let handler_running = Arc::clone(&running);
     let handler_config = Arc::clone(&config);
     let handler_content = Arc::clone(&original_content);
 
     ctrlc::set_handler(move || {
+        handler_running.store(false, Ordering::SeqCst);
         save_config(&handler_config).unwrap();
+
         println!("{}", "\n[>] Cleaning up...".bold().cyan());
         let _ = fs::write(&handler_config.hosts_path, &*handler_content);
         println!("{}", "[>] Exiting".bold().cyan());
+
+        if !args.background {
+            play_audio(format!(
+                "{}/{}",
+                handler_config.working_directory, handler_config.end_audio
+            ));
+        }
         process::exit(0);
     })
     .expect("Error setting Ctrl-C handler");
@@ -189,8 +210,9 @@ fn main() {
         );
         eprintln!("{}", format!("Error: {}", e).bold().red());
     }
-    audio.play("end");
-    audio.wait();
+    if !args.background {
+        play_audio(format!("{}/{}", config.working_directory, config.end_audio));
+    }
 }
 
 fn load_config() -> Result<Config, toml::de::Error> {
@@ -232,4 +254,21 @@ fn start_checker_thead(config: Arc<Config>, blocked_content: String, running: Ar
             thread::sleep(Duration::from_secs(CHECK_INTERVAL));
         }
     });
+}
+
+fn play_audio(path: String) {
+    let _print_gag = Gag::stderr().unwrap();
+
+    if let Ok(stream) = OutputStreamBuilder::open_default_stream() {
+        let sink = Sink::connect_new(stream.mixer());
+        if let Ok(file) = File::open(&path) {
+            let reader = BufReader::new(file);
+            if let Ok(source) = Decoder::new(reader) {
+                sink.append(source);
+                sink.sleep_until_end();
+            }
+        }
+    } else {
+        eprintln!("{}", "[!] Audio device unavailable (Host is down)".bold().yellow());
+    }
 }
