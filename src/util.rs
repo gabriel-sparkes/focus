@@ -126,7 +126,7 @@ pub fn check_status() {
     let config = load_config().unwrap_or_else(|_| {
         eprintln!(
             "{}",
-            "[!] Could not load config to check status.".bold().red()
+            "[!] Could not load config to check status".bold().red()
         );
         process::exit(1);
     });
@@ -154,11 +154,12 @@ pub fn stop_daemon() {
             let _ = Command::new("kill").arg(pid.to_string()).status();
 
             thread::sleep(Duration::from_millis(500));
+            let _ = fs::remove_file(pid_path);
         }
     } else {
         eprintln!(
             "{}",
-            "[!] No active focus session found to stop.".bold().red()
+            "[!] No active focus session found to stop".bold().red()
         );
     }
 }

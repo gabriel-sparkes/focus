@@ -168,7 +168,7 @@ fn main() {
     running.store(false, Ordering::SeqCst);
     thread::sleep(Duration::from_millis(100));
 
-    println!("{}", "Time's up! Unblocking sites.".bold().cyan());
+    println!("{}", "[>] Time's up! Unblocking sites".bold().cyan());
     if let Err(e) = fs::write(&config.hosts_path, &*original_content) {
         eprintln!(
             "{}",
