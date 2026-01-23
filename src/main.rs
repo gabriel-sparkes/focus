@@ -39,9 +39,34 @@ fn main() {
         config.duration = duration;
     }
 
+    util::save_config(&config).unwrap();
+
+    let running = Arc::new(AtomicBool::new(true));
+    let thread_running = Arc::clone(&running);
+
+    let original_content = match fs::read_to_string(&config.hosts_path) {
+        Ok(content) => Arc::new(content),
+        Err(e) => {
+            eprintln!(
+                "{}",
+                format!(
+                    "[!] Failed to read hosts file. Are you running as sudo? Error: {}",
+                    e
+                )
+                .bold()
+                .red()
+            );
+            process::exit(1);
+        }
+    };
+
     match &args.command {
-        Some(util::Commands::Add {urls}) => {
+        Some(util::Commands::Add { urls }) => {
             util::add_urls(urls, config);
+            return;
+        }
+        Some(util::Commands::Remove { urls }) => {
+            util::remove_urls(urls, config);
             return;
         }
         Some(util::Commands::Status) => {
@@ -49,13 +74,16 @@ fn main() {
             return;
         }
         Some(util::Commands::Stop) => {
-            util::stop_daemon();
+            util::stop_daemon(config);
             return;
         }
         None => {}
     }
 
     let config = Arc::new(config);
+
+    let handler_running = Arc::clone(&running);
+    let handler_config = Arc::clone(&config);
 
     let pid_path = format!("{}/focus.pid", config.log_directory);
     let out_path = format!("{}/focus.out", config.log_directory);
@@ -91,34 +119,10 @@ fn main() {
         audio::play_audio(format!("{}/{}", config.data_directory, config.start_audio));
     }
 
-    let running = Arc::new(AtomicBool::new(true));
-    let thread_running = Arc::clone(&running);
-
-    let original_content = match fs::read_to_string(&config.hosts_path) {
-        Ok(content) => Arc::new(content),
-        Err(e) => {
-            eprintln!(
-                "{}",
-                format!(
-                    "[!] Failed to read hosts file. Are you running as sudo? Error: {}",
-                    e
-                )
-                .bold()
-                .red()
-            );
-            process::exit(1);
-        }
-    };
-
-    let handler_running = Arc::clone(&running);
-    let handler_config = Arc::clone(&config);
-    let handler_content = Arc::clone(&original_content);
-
     ctrlc::set_handler(move || {
         util::ctrlc_handler(
             &handler_running,
             &handler_config,
-            &handler_content,
             args.background,
             &pid_path,
         );
@@ -145,6 +149,7 @@ fn main() {
             .bold()
             .cyan()
     );
+
     if let Err(e) = hosts_file.write(&*new_content.as_bytes()) {
         eprintln!(
             "{}",

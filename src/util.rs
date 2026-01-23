@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
@@ -20,6 +21,7 @@ const CONFIG_PATH: &str = "/usr/local/etc/focus/config.toml";
 #[derive(Subcommand, Debug, PartialEq)]
 pub enum Commands {
     Add { urls: Vec<String> },
+    Remove { urls: Vec<String> },
     Status,
     Stop,
 }
@@ -57,24 +59,24 @@ pub struct Config {
 }
 
 pub fn ctrlc_handler(
-    handler_running: &Arc<AtomicBool>,
-    handler_config: &Arc<Config>,
-    handler_content: &Arc<String>,
+    running: &Arc<AtomicBool>,
+    config: &Arc<Config>,
     is_background: bool,
     pid_path: &String,
 ) {
-    handler_running.store(false, Ordering::SeqCst);
-    save_config(&handler_config).unwrap();
+    running.store(false, Ordering::SeqCst);
 
     println!("{}", "\n[>] Cleaning up...".bold().cyan());
-    let _ = fs::write(&handler_config.hosts_path, &**handler_content);
+    let old_content = fs::read_to_string(&config.hosts_path).unwrap();
+    let new_content = Regex::new("# BEGIN FOCUS BLOCK([\\s\\S]*?)# END FOCUS BLOCK")
+        .unwrap()
+        .replace_all(&old_content, "")
+        .to_string();
+    let _ = fs::write(&config.hosts_path, &new_content);
     println!("{}", "[>] Exiting".bold().cyan());
 
     if !is_background {
-        super::audio::play_audio(format!(
-            "{}/{}",
-            handler_config.data_directory, handler_config.end_audio
-        ));
+        super::audio::play_audio(format!("{}/{}", config.data_directory, config.end_audio));
     }
     let _ = fs::remove_file(pid_path);
     process::exit(0);
@@ -138,20 +140,23 @@ pub fn check_status() {
     }
 }
 
-pub fn stop_daemon() {
-    let config = load_config().expect("Could not load config");
+pub fn stop_daemon(config: Config) {
     let pid_path = format!("{}/focus.pid", config.log_directory);
 
     if let Ok(pid_str) = fs::read_to_string(&pid_path) {
         if let Ok(pid) = pid_str.trim().parse::<i32>() {
-            println!(
-                "{}",
-                format!("[>] Stopping daemon (PID: {})...", pid)
-                    .bold()
-                    .cyan()
-            );
+            println!("{}", format!("[>] Stopping daemon...").bold().cyan());
 
             let _ = Command::new("kill").arg(pid.to_string()).status();
+
+            println!("{}", "[>] Cleaning up...".bold().cyan());
+
+            let old_content = fs::read_to_string(&config.hosts_path).unwrap();
+            let new_content = Regex::new("# BEGIN FOCUS BLOCK([\\s\\S]*?)# END FOCUS BLOCK")
+                .unwrap()
+                .replace_all(&old_content, "")
+                .to_string();
+            let _ = fs::write(&config.hosts_path, &new_content);
 
             thread::sleep(Duration::from_millis(500));
             let _ = fs::remove_file(pid_path);
@@ -159,14 +164,39 @@ pub fn stop_daemon() {
     } else {
         eprintln!(
             "{}",
-            "[!] No active focus session found to stop".bold().red()
+            "[!] No active focus session found to stop. Are you running as sudo?"
+                .bold()
+                .red()
         );
     }
 }
 
 pub fn add_urls(urls: &Vec<String>, config: Config) {
+    if urls.is_empty() {
+        println!(
+            "{}",
+            "[!] Please provide a list of one or more URLs".bold().red()
+        );
+        return;
+    }
+
     let mut config = config.clone();
     let mut urls = urls.clone();
     config.blocked_sites.append(&mut urls);
+    save_config(&config).unwrap();
+}
+
+pub fn remove_urls(urls: &Vec<String>, config: Config) {
+    if urls.is_empty() {
+        println!(
+            "{}",
+            "[!] Please provide a list of one or more URLs".bold().red()
+        );
+        return;
+    }
+
+    let mut config = config.clone();
+    let urls = urls.clone();
+    config.blocked_sites.retain(|url| !urls.contains(url));
     save_config(&config).unwrap();
 }
