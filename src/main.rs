@@ -2,8 +2,7 @@ use clap::Parser;
 use colored::Colorize;
 use daemonize::Daemonize;
 use std::{
-    fs::{self, File, OpenOptions},
-    io::Write,
+    fs::{self, File},
     path,
     process::{self, Command},
     sync::{
@@ -39,7 +38,7 @@ fn main() {
         config.duration = duration;
     }
 
-    util::save_config(&config).unwrap();
+    util::save_config(&config).expect("[!] Failed to save configuration");
 
     let running = Arc::new(AtomicBool::new(true));
     let thread_running = Arc::clone(&running);
@@ -69,12 +68,16 @@ fn main() {
             util::remove_urls(urls, config);
             return;
         }
+        Some(util::Commands::Start) => {
+            util::block_sites(&config, true);
+            return;
+        }
         Some(util::Commands::Status) => {
             util::check_status();
             return;
         }
         Some(util::Commands::Stop) => {
-            util::stop_daemon(config);
+            util::stop_daemon(&config);
             return;
         }
         None => {}
@@ -129,36 +132,7 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let mut new_content = String::from("\n# BEGIN FOCUS BLOCK\n");
-    for site in &config.blocked_sites {
-        new_content.push_str(&format!("{}\t{}\n", &config.block_ip, site));
-    }
-    new_content.push_str("# END FOCUS BLOCK");
-
-    let mut hosts_file = OpenOptions::new()
-        .append(true)
-        .open(&config.hosts_path)
-        .expect(&format!(
-            "[!] Failed to open {}. Are you running as sudo?",
-            &config.hosts_path
-        ));
-
-    println!(
-        "{}",
-        format!("[>] Blocking sites for {} minutes", config.duration)
-            .bold()
-            .cyan()
-    );
-
-    if let Err(e) = hosts_file.write(&*new_content.as_bytes()) {
-        eprintln!(
-            "{}",
-            format!("[!] Failed to write to hosts file: {}", e)
-                .bold()
-                .red()
-        );
-        process::exit(1);
-    }
+    util::block_sites(&config, false);
 
     println!("{}", "[>] Flushing DNS cache".bold().cyan());
     Command::new("resolvectl")
@@ -167,7 +141,7 @@ fn main() {
         .expect(&format!("{}", "[!] Failed to flush DNS cache"));
 
     let thread_config = Arc::clone(&config);
-    util::start_checker_thead(thread_config, new_content, thread_running);
+    util::start_checker_thead(thread_config, thread_running);
     thread::sleep(Duration::from_mins(config.duration));
 
     running.store(false, Ordering::SeqCst);
